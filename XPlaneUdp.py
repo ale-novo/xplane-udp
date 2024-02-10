@@ -37,12 +37,37 @@ class XPlaneUdp:
     # values from xplane
     self.BeaconData = {}
     self.xplaneValues = {}
-    self.defaultFreq = 1
+    self.defaultFreq = 10
 
   def __del__(self):
     for i in range(len(self.datarefs)):
       self.AddDataRef(next(iter(self.datarefs.values())), freq=0)
     self.socket.close()
+
+  def StartRadar(self, ppf):
+    self.weather_map = {}
+
+    cmd = b"RADR\x00"
+    byte_ppf = bytes(str(ppf), 'utf-8')
+
+    message = struct.pack("<4sx10s", cmd, byte_ppf)
+    assert(len(message)==15)
+    self.socket.sendto(message, (self.BeaconData["IP"], self.BeaconData["Port"]))
+
+  def StopRadar(self):
+    self.weather_map = {}
+    self.StartRadar(0)
+
+  def SendFpl(self, fpln):
+    cmd = b"FPLN\x00"
+    message = struct.pack("<5s1400s", cmd, fpln.encode())
+    self.socket.sendto(message, (self.BeaconData["IP"], self.BeaconData["Port"]))
+
+  def SendCommand(self, cmd):
+    msg = 'CMND0'
+    msg += cmd
+    self.socket.sendto(msg.encode("latin_1"), (self.BeaconData["IP"], self.UDP_PORT))
+
   def WriteDataRef(self,dataref,value,vtype='float'):
     '''
     Write Dataref to XPlane
@@ -97,17 +122,16 @@ class XPlaneUdp:
   def GetValues(self):
     try:
       # Receive packet
-      data, addr = self.socket.recvfrom(1472) # maximum bytes of an RREF answer X-Plane will send (Ethernet MTU - IP hdr - UDP hdr)
+      data, addr = self.socket.recvfrom(1472) # maximum bytes of an answer X-Plane will send (Ethernet MTU 1500b - IP hdr 20b - UDP hdr 8b)
       # Decode Packet
       retvalues = {}
       # * Read the Header "RREFO".
       header=data[0:5]
-      if(header!=b"RREF,"): # (was b"RREFO" for XPlane10)
-        print("Unknown packet: ", binascii.hexlify(data))
-      else:
+      #print(str(header))
+      if(header==b"RREF,"): # (was b"RREFO" for XPlane10)
         # * We get 8 bytes for every dataref sent:
         #   An integer for idx and the float value. 
-        values =data[5:]
+        values = data[5:]
         lenvalue = 8
         numvalues = int(len(values)/lenvalue)
         for i in range(0,numvalues):
@@ -118,7 +142,36 @@ class XPlaneUdp:
             if value < 0.0 and value > -0.001 :
               value = 0.0
             retvalues[self.datarefs[idx]] = value
+            
+      elif(header==b"RADR5"):
+        '''
+      XP11
+      (header,       # == 'RADR'
+       lon,          # float longitude of radar point
+       lat,          # float latitude
+       storm_level,  # precipitation level, 0 to 100
+       storm_height  # storm tops in meters MSL
+       ) = struct.unpack("<4xffBf", packet)
+        '''
+        values = data[5:]
+        # Length of each RADR5 section in bytes: float (4 bytes) + float (4 bytes) + uint8 (1 byte) + float (4 bytes) = 13 bytes
+        len_section = 13
+        num_sections = int(len(values) / len_section)
+        radr5_data = []
+
+        for i in range(num_sections):
+          section_start = i * len_section
+          section_data = values[section_start:section_start + len_section]
+          lon, lat, storm_level, storm_height = struct.unpack("<ffBf", section_data)
+
+          print("lat:", lat, "lon:", lon)
+          self.weather_map[(lat, lon)] = {"storm_level": storm_level, "storm_height": storm_height}
+
+      else:
+        print("Unknown packet: ", binascii.hexlify(data))
+
       self.xplaneValues.update(retvalues)
+
     except:
       raise XPlaneTimeout
     return self.xplaneValues
@@ -135,10 +188,12 @@ class XPlaneUdp:
       # open socket for multicast group. 
       sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
       sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
       if platform.system() == "Windows":
         sock.bind(('', self.MCAST_PORT))
       else:
         sock.bind((self.MCAST_GRP, self.MCAST_PORT))
+
       mreq = struct.pack("=4sl", socket.inet_aton(self.MCAST_GRP), socket.INADDR_ANY)
       sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
       sock.settimeout(3.0)
@@ -211,6 +266,11 @@ class XPlaneUdp:
 # You need a running xplane in your network. 
 if __name__ == '__main__':
 
+  longitude = "sim/flightmodel/position/longitude"
+  latitude = "sim/flightmodel/position/latitude"
+  mag_track = "sim/cockpit2/gauges/indicators/ground_track_mag_pilot"
+  mag_var = "sim/flightmodel/position/magnetic_variation"
+
   xp = XPlaneUdp()
 
   try:
@@ -218,13 +278,59 @@ if __name__ == '__main__':
     print(beacon)
     print()
     
-    xp.AddDataRef("sim/flightmodel/position/indicated_airspeed", freq=1)
-    xp.AddDataRef("sim/flightmodel/position/latitude")
-    
+    xp.AddDataRef(longitude)
+    xp.AddDataRef(latitude)
+    xp.AddDataRef(mag_track)
+    xp.AddDataRef(mag_var)
+
+    xp.StartRadar(1000)
+
+    '''
+    # Load flight plan
+
+    fpln = "I\n\
+1100 Version\n\
+CYCLE 2211\n\
+ADEP KCLT\n\
+DEPRWY RW36R\n\
+SID KILNS4\n\
+SIDTRANS KILNS\n\
+ADES KEWR\n\
+DESRWY RW22L\n\
+STAR PHLBO3\n\
+STARTRANS FAK\n\
+APP I22L\n\
+APPTRANS PATRN\n\
+NUMENR 4\n\
+1 KCLT ADEP 748.000000 35.213700 -80.949100\n\
+11 AUDII DRCT 0.000000 36.202142 -78.810072\n\
+3 FAK DRCT 0.000000 37.528508 -77.828219\n\
+1 KEWR ADES 17.000000 40.692500 -74.168700"
+
+    xp.SendFpl(fpln)
+    '''
+
+    '''
+    # Send Command
+
+    xp.SendCommand("sim/operation/reset_flight")
+    '''
+
     while True:
       try:
         values = xp.GetValues()
-        print(values)
+        #print(values)
+
+        latitude_value = values[latitude]
+        longitude_value = values[longitude]
+        mag_track_value = values[mag_track]
+        mag_var_value = values[mag_var]
+
+        map_heading_value = mag_track_value - mag_var_value
+
+        #print("lat:", latitude_value, "long:", longitude_value, "heading:", map_heading_value)
+        #print("wxr:", len(xp.weather_map))
+
       except XPlaneTimeout:
         print("XPlane Timeout")
         exit(0)
