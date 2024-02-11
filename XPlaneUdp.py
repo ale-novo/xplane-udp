@@ -6,6 +6,7 @@ import struct
 import binascii
 from time import sleep
 import platform
+import math
 
 class XPlaneIpNotFound(Exception):
   args="Could not find any running XPlane instance in network."
@@ -43,7 +44,16 @@ class XPlaneUdp:
     self.socket.close()
 
   def StartRadar(self, ppf):
-    self.weather_map = {}
+    self.wxr_map_temp = {}
+    self.wxr_map = {}
+
+    self.wxr_lonmin = None
+    self.wxr_lonmax = None
+    self.wxr_latmin = None
+    self.wxr_latmax = None
+
+    self.wxr_ncol = 0
+    self.wxr_nlin = 0
 
     cmd = b"RADR\x00"
     byte_ppf = bytes(str(ppf), 'utf-8')
@@ -159,9 +169,42 @@ class XPlaneUdp:
           section_data = values[section_start:section_start + len_section]
           lon, lat, storm_level, storm_height = struct.unpack("<ffBf", section_data)
 
+          #print("lat:",lat, "lon", lon)
+
           if(lat != 0 and lon !=0):
-            print("lat:", lat, "lon:", lon)
-            self.weather_map[(lat, lon)] = {"storm_level": storm_level, "storm_height": storm_height}
+            #print("lat:", lat, "lon:", lon)
+
+            if(self.wxr_lonmax == None):
+              self.wxr_lonmin = lon
+              self.wxr_lonmax = lon
+              self.wxr_latmin = lat
+              self.wxr_latmax = lat
+
+            if(lon > self.wxr_lonmax):
+              self.wxr_lonmax = lon
+            if(lon < self.wxr_lonmin):
+              self.wxr_lonmin = lon
+            if(lat > self.wxr_latmax):
+              self.wxr_latmax = lat
+            if(lat < self.wxr_latmin):
+              self.wxr_latmin = lat
+          
+            self.wxr_map_temp[(lat,lon)] = storm_level
+
+
+            if lon < self.wxr_lonmax and lat < self.wxr_latmax:
+              # longitude spacing depending on latitude
+              self.wxr_pixperlon = int(60.0 * math.cos(math.pi / 180.0 * (self.wxr_latmax + self.wxr_latmin) * 0.5))
+              self.wxr_pixperlat = 60
+              wxr_ncol = int((self.wxr_lonmax - self.wxr_lonmin) * self.wxr_pixperlon + 1)
+              wxr_nlin = int((self.wxr_latmax - self.wxr_latmin) * self.wxr_pixperlat + 1)
+
+              if wxr_ncol > self.wxr_ncol or wxr_nlin > self.wxr_nlin:
+                self.wxr_ncol = wxr_ncol
+                self.wxr_nlin = wxr_nlin
+                print(f"Found WXR Lon/Lat Bounds: {self.wxr_lonmin} to {self.wxr_lonmax} / {self.wxr_latmin} to {self.wxr_latmax}, WXR Data size: {self.wxr_ncol} x {self.wxr_nlin}")
+                print('keys', len(self.wxr_map_temp))
+                self.wxr_map_temp = {}
 
       else:
         print("Unknown packet: ", binascii.hexlify(data))
