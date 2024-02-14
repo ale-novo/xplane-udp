@@ -8,6 +8,41 @@ from time import sleep
 import platform
 import math
 
+def find_storm_level_ahead(storm_data, aircraft_lat, aircraft_lon, aircraft_heading, error_margin=0.1):
+    """
+    Searches for storm level data ahead of the aircraft's position considering its heading.
+    
+    :param storm_data: A dictionary with (latitude, longitude) as keys and storm_level as values
+    :param aircraft_lat: The latitude of the aircraft
+    :param aircraft_lon: The longitude of the aircraft
+    :param aircraft_heading: The heading of the aircraft in degrees (0-359)
+    :param error_margin: The margin of error for latitude and longitude
+    :return: Filtered storm level data directly ahead of the aircraft within the error margin
+    """
+    # Convert heading to radians
+    heading_radians = math.radians(aircraft_heading)
+    
+    # Calculate directional vector based on heading
+    dir_vector_lat = math.cos(heading_radians)
+    dir_vector_lon = math.sin(heading_radians)
+    
+    # Define search area based on direction vector and error margin
+    lat_min = aircraft_lat + error_margin * min(0, dir_vector_lat)
+    lat_max = aircraft_lat + error_margin * max(0, dir_vector_lat)
+    lon_min = aircraft_lon + error_margin * min(0, dir_vector_lon)
+    lon_max = aircraft_lon + error_margin * max(0, dir_vector_lon)
+   
+    print("heading_radians", heading_radians, "dir_vector_lat", dir_vector_lat, "dir_vector_lon", dir_vector_lon, "lat_min", lat_min, "lat_max", lat_max, "lon_min", lon_min, "lon_max", lon_max)
+
+    #print("storm_data", storm_data)
+    # Filter storm_data based on adjusted search area
+    filtered_storm_data = {
+        coords: level for coords, level in storm_data.items()
+        if lat_min <= coords[0] <= lat_max and lon_min <= coords[1] <= lon_max
+    }
+    
+    return filtered_storm_data
+
 class XPlaneIpNotFound(Exception):
   args="Could not find any running XPlane instance in network."
 
@@ -43,9 +78,10 @@ class XPlaneUdp:
       self.AddDataRef(next(iter(self.datarefs.values())), freq=0)
     self.socket.close()
 
-  def StartRadar(self, ppf):
+  def StartRadar(self, ppf, decimals=2):
     self.wxr_map_temp = {}
     self.wxr_map = {}
+    self.decimals = decimals
 
     self.wxr_lonmin = None
     self.wxr_lonmax = None
@@ -188,9 +224,15 @@ class XPlaneUdp:
               self.wxr_latmax = lat
             if(lat < self.wxr_latmin):
               self.wxr_latmin = lat
-          
-            self.wxr_map_temp[(lat,lon)] = storm_level
+         
+            rlat = round(lat, self.decimals)
+            rlon = round(lon, self.decimals)
 
+            self.wxr_map[(rlat,rlon)] = storm_level
+
+            if rlat not in self.wxr_map_temp:
+              self.wxr_map_temp[rlat] = []
+            self.wxr_map_temp[rlat].append({rlon: storm_level})
 
             if lon < self.wxr_lonmax and lat < self.wxr_latmax:
               # longitude spacing depending on latitude
@@ -203,8 +245,9 @@ class XPlaneUdp:
                 self.wxr_ncol = wxr_ncol
                 self.wxr_nlin = wxr_nlin
                 print(f"Found WXR Lon/Lat Bounds: {self.wxr_lonmin} to {self.wxr_lonmax} / {self.wxr_latmin} to {self.wxr_latmax}, WXR Data size: {self.wxr_ncol} x {self.wxr_nlin}")
-                print('keys', len(self.wxr_map_temp))
-                self.wxr_map_temp = {}
+
+            #print(lat)
+                
 
       else:
         print("Unknown packet: ", binascii.hexlify(data))
@@ -365,8 +408,14 @@ NUMENR 4\n\
 
         map_heading_value = mag_track_value - mag_var_value
 
-        #print("lat:", latitude_value, "long:", longitude_value, "heading:", map_heading_value)
+        print("lat:", latitude_value, "long:", longitude_value, "heading:", map_heading_value)
         #print("wxr:", len(xp.weather_map))
+
+        # Find storm level data ahead
+        storm_level_ahead = find_storm_level_ahead(xp.wxr_map, latitude_value, longitude_value, map_heading_value)
+        print(f"Storm level data ahead of the aircraft: {storm_level_ahead}")
+
+        #print(xp.wxr_map)
 
       except XPlaneTimeout:
         print("XPlane Timeout")
