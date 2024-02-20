@@ -6,42 +6,6 @@ import struct
 import binascii
 from time import sleep
 import platform
-import math
-
-def find_storm_level_ahead(storm_data, aircraft_lat, aircraft_lon, aircraft_heading, error_margin=0.1):
-    """
-    Searches for storm level data ahead of the aircraft's position considering its heading.
-    
-    :param storm_data: A dictionary with (latitude, longitude) as keys and storm_level as values
-    :param aircraft_lat: The latitude of the aircraft
-    :param aircraft_lon: The longitude of the aircraft
-    :param aircraft_heading: The heading of the aircraft in degrees (0-359)
-    :param error_margin: The margin of error for latitude and longitude
-    :return: Filtered storm level data directly ahead of the aircraft within the error margin
-    """
-    # Convert heading to radians
-    heading_radians = math.radians(aircraft_heading)
-    
-    # Calculate directional vector based on heading
-    dir_vector_lat = math.cos(heading_radians)
-    dir_vector_lon = math.sin(heading_radians)
-    
-    # Define search area based on direction vector and error margin
-    lat_min = aircraft_lat + error_margin * min(0, dir_vector_lat)
-    lat_max = aircraft_lat + error_margin * max(0, dir_vector_lat)
-    lon_min = aircraft_lon + error_margin * min(0, dir_vector_lon)
-    lon_max = aircraft_lon + error_margin * max(0, dir_vector_lon)
-   
-    print("heading_radians", heading_radians, "dir_vector_lat", dir_vector_lat, "dir_vector_lon", dir_vector_lon, "lat_min", lat_min, "lat_max", lat_max, "lon_min", lon_min, "lon_max", lon_max)
-
-    #print("storm_data", storm_data)
-    # Filter storm_data based on adjusted search area
-    filtered_storm_data = {
-        coords: level for coords, level in storm_data.items()
-        if lat_min <= coords[0] <= lat_max and lon_min <= coords[1] <= lon_max
-    }
-    
-    return filtered_storm_data
 
 class XPlaneIpNotFound(Exception):
   args="Could not find any running XPlane instance in network."
@@ -59,7 +23,7 @@ class XPlaneUdp:
   '''
   #constants
   MCAST_GRP = "239.255.1.1"
-  MCAST_PORT = 49707 # (MCAST_PORT was 49000 for XPlane10)
+  MCAST_PORT = 49707
   
   def __init__(self):
     # Open a UDP Socket to receive on Port 49000
@@ -78,18 +42,8 @@ class XPlaneUdp:
       self.AddDataRef(next(iter(self.datarefs.values())), freq=0)
     self.socket.close()
 
-  def StartRadar(self, ppf, decimals=2):
-    self.wxr_map_temp = {}
-    self.wxr_map = {}
-    self.decimals = decimals
-
-    self.wxr_lonmin = None
-    self.wxr_lonmax = None
-    self.wxr_latmin = None
-    self.wxr_latmax = None
-
-    self.wxr_ncol = 0
-    self.wxr_nlin = 0
+  def StartRadar(self, ppf):
+    self.xplaneValues['RADR'] = []
 
     cmd = b"RADR\x00"
     byte_ppf = bytes(str(ppf), 'utf-8')
@@ -99,7 +53,6 @@ class XPlaneUdp:
     self.socket.sendto(message, (self.BeaconData["IP"], self.BeaconData["Port"]))
 
   def StopRadar(self):
-    self.weather_map = {}
     self.StartRadar(0)
 
   def SendFpl(self, fpln):
@@ -110,7 +63,7 @@ class XPlaneUdp:
   def SendCommand(self, cmd):
     msg = 'CMND0'
     msg += cmd
-    self.socket.sendto(msg.encode("latin_1"), (self.BeaconData["IP"], self.UDP_PORT))
+    self.socket.sendto(msg.encode("latin_1"), (self.BeaconData["IP"], self.BeaconData["Port"]))
 
   def WriteDataRef(self,dataref,value,vtype='float'):
     '''
@@ -130,7 +83,7 @@ class XPlaneUdp:
       message = struct.pack("<5sI500s", cmd, int(value), string)
 
     assert(len(message)==509)
-    self.socket.sendto(message, (self.BeaconData["IP"], self.UDP_PORT))
+    self.socket.sendto(message, (self.BeaconData["IP"], self.BeaconData["Port"]))
 
   def AddDataRef(self, dataref, freq = None):
     '''
@@ -176,6 +129,7 @@ class XPlaneUdp:
         values = data[5:]
         lenvalue = 8
         numvalues = int(len(values)/lenvalue)
+
         for i in range(0,numvalues):
           singledata = data[(5+lenvalue*i):(5+lenvalue*(i+1))]
           (idx,value) = struct.unpack("<if", singledata)
@@ -186,68 +140,55 @@ class XPlaneUdp:
             retvalues[self.datarefs[idx]] = value
             
       elif(header==b"RADR5"):
-        '''
-        XP11
-        (header,       # == 'RADR'
-         lon,          # float longitude of radar point
-         lat,          # float latitude
-         storm_level,  # precipitation level, 0 to 100
-         storm_height  # storm tops in meters MSL
-         ) = struct.unpack("<4xffBf", packet)
-        '''
+
         values = data[5:]
-        # Length of each RADR5 section in bytes: float (4 bytes) + float (4 bytes) + uint8 (1 byte) + float (4 bytes) = 13 bytes
-        len_section = 13
-        num_sections = int(len(values) / len_section)
+        if self.XPlaneVersion.startswith('11'):
+            '''
+            XP11
+           (header,       # == 'RADR'
+            lon,          # float longitude of radar point
+            lat,          # float latitude
+            storm_level,  # precipitation level, 0 to 100
+            storm_height  # storm tops in meters MSL
+            ) = struct.unpack("<4xffBf", packet)
+            '''
+            # Length of each RADR5 section in bytes: float 4b + float 4b + uint8 1b + float 4b = 13 bytes
+            len_section = 13
+            num_sections = int(len(values) / len_section)
 
-        for i in range(num_sections):
-          section_start = i * len_section
-          section_data = values[section_start:section_start + len_section]
-          lon, lat, storm_level, storm_height = struct.unpack("<ffBf", section_data)
+            retvalues['RADR'] = []
 
-          #print("lat:",lat, "lon", lon)
+            for i in range(num_sections):
+                section_start = i * len_section
+                section_data = values[section_start:section_start + len_section]
+                lon, lat, storm_level, storm_height = struct.unpack("<ffBf", section_data)
 
-          if(lat != 0 and lon !=0):
-            #print("lat:", lat, "lon:", lon)
+                retvalues['RADR'].append({'lat': lat, 'lon': lon, 'storm_level': storm_level, 'storm_height': storm_height})
 
-            if(self.wxr_lonmax == None):
-              self.wxr_lonmin = lon
-              self.wxr_lonmax = lon
-              self.wxr_latmin = lat
-              self.wxr_latmax = lat
+        if self.XPlaneVersion.startswith('12'):
+            '''
+            XP12
+            (header,       # == 'RADR'
+            lon,          # float longitude of radar point
+            lat,          # float latitude
+            bases_meters, # float cloud bases in meters MSL
+            tops_meters,  # float cloud tops in meters MSL
+            clouds ratio, # float ratio, clouds present in the lat and lon
+            precip_ratio  # float ratio, precipitation present at this lat and lon
+            ) = struct.unpack("<4xffffff", packet)
+            '''
+            # Length of each RADR5 section in bytes: float 4b + float 4b + float 4b + float 4b +  float 4b + float 4b = 24 bytes
+            len_section = 24
+            num_sections = int(len(values) / len_section)
 
-            if(lon > self.wxr_lonmax):
-              self.wxr_lonmax = lon
-            if(lon < self.wxr_lonmin):
-              self.wxr_lonmin = lon
-            if(lat > self.wxr_latmax):
-              self.wxr_latmax = lat
-            if(lat < self.wxr_latmin):
-              self.wxr_latmin = lat
-         
-            rlat = round(lat, self.decimals)
-            rlon = round(lon, self.decimals)
+            retvalues['RADR'] = []
 
-            self.wxr_map[(rlat,rlon)] = storm_level
+            for i in range(num_sections):
+                section_start = i * len_section
+                section_data = values[section_start:section_start + len_section]
+                lon, lat, storm_level, storm_height = struct.unpack("<ffBf", section_data)
 
-            if rlat not in self.wxr_map_temp:
-              self.wxr_map_temp[rlat] = []
-            self.wxr_map_temp[rlat].append({rlon: storm_level})
-
-            if lon < self.wxr_lonmax and lat < self.wxr_latmax:
-              # longitude spacing depending on latitude
-              self.wxr_pixperlon = int(60.0 * math.cos(math.pi / 180.0 * (self.wxr_latmax + self.wxr_latmin) * 0.5))
-              self.wxr_pixperlat = 60
-              wxr_ncol = int((self.wxr_lonmax - self.wxr_lonmin) * self.wxr_pixperlon + 1)
-              wxr_nlin = int((self.wxr_latmax - self.wxr_latmin) * self.wxr_pixperlat + 1)
-
-              if wxr_ncol > self.wxr_ncol or wxr_nlin > self.wxr_nlin:
-                self.wxr_ncol = wxr_ncol
-                self.wxr_nlin = wxr_nlin
-                print(f"Found WXR Lon/Lat Bounds: {self.wxr_lonmin} to {self.wxr_lonmax} / {self.wxr_latmin} to {self.wxr_latmax}, WXR Data size: {self.wxr_ncol} x {self.wxr_nlin}")
-
-            #print(lat)
-                
+                retvalues['RADR'].append({'lat': lat, 'lon': lon, 'base_meters': base_meters, 'tops_meters': tops_meters, 'clouds_ratio': clouds_ratio, 'precip_ratio': precip_ratio})
 
       else:
         print("Unknown packet: ", binascii.hexlify(data))
@@ -321,6 +262,8 @@ class XPlaneUdp:
           ) = struct.unpack("<BBiiIH", data)
         hostname = packet[21:-1] # the hostname of the computer
         hostname = hostname[0:hostname.find(0)]
+        self.XPlaneVersion = str(xplane_version_number)
+
         if beacon_major_version == 1 \
           and beacon_minor_version <= 2 \
           and application_host_id == 1:
@@ -342,32 +285,22 @@ class XPlaneUdp:
 
     return self.BeaconData
 
-# Example how to use:
-# You need a running xplane in your network. 
 if __name__ == '__main__':
 
-  longitude = "sim/flightmodel/position/longitude"
-  latitude = "sim/flightmodel/position/latitude"
-  mag_track = "sim/cockpit2/gauges/indicators/ground_track_mag_pilot"
-  mag_var = "sim/flightmodel/position/magnetic_variation"
-
+  sim_time = "sim/time/local_time_sec"
   xp = XPlaneUdp()
 
   try:
     beacon = xp.FindIp()
     print(beacon)
-    print()
-    
-    xp.AddDataRef(longitude)
-    xp.AddDataRef(latitude)
-    xp.AddDataRef(mag_track)
-    xp.AddDataRef(mag_var)
+   
+    # Register Dataref
+    xp.AddDataRef(sim_time)
 
-    xp.StartRadar(1000)
+    # Start Radar
+    xp.StartRadar(2000)
 
-    '''
     # Load flight plan
-
     fpln = "I\n\
 1100 Version\n\
 CYCLE 2211\n\
@@ -386,40 +319,24 @@ NUMENR 4\n\
 11 AUDII DRCT 0.000000 36.202142 -78.810072\n\
 3 FAK DRCT 0.000000 37.528508 -77.828219\n\
 1 KEWR ADES 17.000000 40.692500 -74.168700"
-
     xp.SendFpl(fpln)
-    '''
 
-    '''
     # Send Command
-
     xp.SendCommand("sim/operation/reset_flight")
-    '''
 
     while True:
       try:
+
         values = xp.GetValues()
-        #print(values)
 
-        latitude_value = values[latitude]
-        longitude_value = values[longitude]
-        mag_track_value = values[mag_track]
-        mag_var_value = values[mag_var]
-
-        map_heading_value = mag_track_value - mag_var_value
-
-        print("lat:", latitude_value, "long:", longitude_value, "heading:", map_heading_value)
-        #print("wxr:", len(xp.weather_map))
-
-        # Find storm level data ahead
-        storm_level_ahead = find_storm_level_ahead(xp.wxr_map, latitude_value, longitude_value, map_heading_value)
-        print(f"Storm level data ahead of the aircraft: {storm_level_ahead}")
-
-        #print(xp.wxr_map)
+        wxr_value = values['RADR']
+        simtime_value = values[sim_time]
 
       except XPlaneTimeout:
         print("XPlane Timeout")
         exit(0)
+
+    sys.exit()
 
   except XPlaneVersionNotSupported:
     print("XPlane Version not supported.")
