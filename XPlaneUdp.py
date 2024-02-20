@@ -35,7 +35,7 @@ class XPlaneUdp:
     # values from xplane
     self.BeaconData = {}
     self.xplaneValues = {}
-    self.defaultFreq = 10
+    self.defaultFreq = 30
 
   def __del__(self):
     for i in range(len(self.datarefs)):
@@ -120,12 +120,15 @@ class XPlaneUdp:
       data, addr = self.socket.recvfrom(1472) # maximum bytes of an answer X-Plane will send (Ethernet MTU 1500b - IP hdr 20b - UDP hdr 8b)
       # Decode Packet
       retvalues = {}
-      # * Read the Header "RREFO".
+      # * Read the Header "RREF".
       header=data[0:5]
       #print(str(header))
-      if(header==b"RREF,"): # (was b"RREFO" for XPlane10)
-        # * We get 8 bytes for every dataref sent:
-        #   An integer for idx and the float value. 
+      if(header==b"RREF,"):
+        '''
+        We get 8 bytes for every dataref sent:
+        An integer for idx and the float value. 
+        '''
+
         values = data[5:]
         lenvalue = 8
         numvalues = int(len(values)/lenvalue)
@@ -234,18 +237,19 @@ class XPlaneUdp:
         print(binascii.hexlify(packet))
           
       else:
-        # * Data
         data = packet[5:21]
-        # struct becn_struct
-        # {
-        # 	uchar beacon_major_version;		// 1 at the time of X-Plane 10.40
-        # 	uchar beacon_minor_version;		// 1 at the time of X-Plane 10.40
-        # 	xint application_host_id;			// 1 for X-Plane, 2 for PlaneMaker
-        # 	xint version_number;			// 104014 for X-Plane 10.40b14
-        # 	uint role;						// 1 for master, 2 for extern visual, 3 for IOS
-        # 	ushort port;					// port number X-Plane is listening on
-        # 	xchr	computer_name[strDIM];		// the hostname of the computer 
-        # };
+        '''
+        struct becn_struct
+        {
+        	uchar beacon_major_version;		// 1 at the time of X-Plane 11.55
+         	uchar beacon_minor_version;		// 1 at the time of X-Plane 11.55
+         	xint application_host_id;		// 1 for X-Plane, 2 for PlaneMaker
+         	xint version_number;			// 115501 for X-Plane 11.55
+         	uint role;						// 1 for master, 2 for extern visual, 3 for IOS
+         	ushort port;					// port number X-Plane is listening on
+         	xchr	computer_name[strDIM];	// the hostname of the computer 
+        };
+        '''
         beacon_major_version = 0
         beacon_minor_version = 0
         application_host_id = 0
@@ -253,12 +257,12 @@ class XPlaneUdp:
         role = 0
         port = 0
         (
-          beacon_major_version,  # 1 at the time of X-Plane 10.40
-          beacon_minor_version,  # 1 at the time of X-Plane 10.40
-          application_host_id,   # 1 for X-Plane, 2 for PlaneMaker
-          xplane_version_number, # 104014 for X-Plane 10.40b14
-          role,                  # 1 for master, 2 for extern visual, 3 for IOS
-          port,                  # port number X-Plane is listening on
+          beacon_major_version,
+          beacon_minor_version,
+          application_host_id,
+          xplane_version_number,
+          role,
+          port,
           ) = struct.unpack("<BBiiIH", data)
         hostname = packet[21:-1] # the hostname of the computer
         hostname = hostname[0:hostname.find(0)]
@@ -298,7 +302,7 @@ if __name__ == '__main__':
     xp.AddDataRef(sim_time)
 
     # Start Radar
-    xp.StartRadar(2000)
+    xp.StartRadar(1000)
 
     # Load flight plan
     fpln = "I\n\
