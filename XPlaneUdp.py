@@ -225,7 +225,7 @@ class XPlaneUdp:
     # receive data
     try:   
       packet, sender = sock.recvfrom(1472)
-      print("XPlane Beacon: ", packet.hex())
+      #print("XPlane Beacon: ", packet.hex())
 
       # decode data
       # * Header
@@ -276,7 +276,7 @@ class XPlaneUdp:
           self.BeaconData["hostname"] = hostname.decode()
           self.BeaconData["XPlaneVersion"] = xplane_version_number
           self.BeaconData["role"] = role
-          print("XPlane Beacon Version: {}.{}.{}".format(beacon_major_version, beacon_minor_version, application_host_id))
+          #print("XPlane Beacon Version: {}.{}.{}".format(beacon_major_version, beacon_minor_version, application_host_id))
         else:
           print("XPlane Beacon Version not supported: {}.{}.{}".format(beacon_major_version, beacon_minor_version, application_host_id))
           raise XPlaneVersionNotSupported()

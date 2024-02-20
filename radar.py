@@ -5,8 +5,8 @@ import sys
 from XPlaneUdp import *
 
 def round_custom(value):
-    #return round(value * 2) / 2
-    return round(value * 5) / 5
+    return round(value * 2) / 2 # 0 or 0.5
+    #return round(value * 5) / 5 # 0, 0.2, 0.4, 0.6, 0.8
 
 def sweep_motion(simtime_value, sweep_time, wxr_angle):
     cycle_fraction = (simtime_value % sweep_time) / sweep_time
@@ -18,13 +18,23 @@ def sweep_motion(simtime_value, sweep_time, wxr_angle):
 
     return round_custom(angle)
 
-def draw_squares(screen, wxr_range, max_range, window_size, display_angle):
-    min_side_length = window_size[1] / (max_range * 1) #2 # Smaller base size for squares at the start
-    max_side_length = 1*window_size[1] / max_range  # Larger size for squares at the end
+def draw_squares(screen, wxr_range, max_range, window_size, display_angle, mag_heading_value, gain):
+    # Adjust max_range for calculations to account for 0.5 increments
+    adjusted_max_range = max_range * 2  # Since range increments are by 0.5, double the max_range for proportion calculations
+
+    min_side_length = window_size[1] / (max_range * 1)  # Adjusted for 0.5 increment
+    max_side_length = window_size[1] / max_range  # Larger size for squares at the end, no change needed here
 
     radians_angle = math.radians(display_angle)  # Convert angle to radians for math calculations
 
-    for key, color_value in wxr_range[display_angle].items():
+    corrected_heading = mag_heading_value + display_angle
+    corrected_heading = corrected_heading % 360
+
+    if corrected_heading < 0:
+        corrected_heading += 360
+
+    for key, color_value in wxr_range[corrected_heading].items():
+        '''
         if color_value <= 50:
             color = (0, int((color_value / 50) * 255), 0)
         elif color_value <= 75:
@@ -33,9 +43,21 @@ def draw_squares(screen, wxr_range, max_range, window_size, display_angle):
         else:
             yellow_to_red_ratio = (color_value - 75) / 25
             color = (255, int((1 - yellow_to_red_ratio) * 255), 0)
+        '''
+        if gain*color_value <= 40:
+            color = (0, int((gain*color_value / 40) * 255), 0)
+        elif 40 < gain*color_value <= 55:
+            color = (0, 250, 0)
+        elif 55 < gain*color_value <= 70:
+            color = (250, 250, 0)
+        elif 70 < gain*color_value <= 99:
+            color = (250, 0, 0)
+        else:
+            color = (200, 45, 200)
 
-        # Calculate dynamic side length based on position
-        proportion = key / max_range
+
+        # Calculate dynamic side length based on position, adjusted for 0.5 increment steps
+        proportion = (key * 2) / adjusted_max_range  # Adjust key value for 0.5 increments
         dynamic_side_length = min_side_length + (max_side_length - min_side_length) * proportion
 
         base_x_pos = window_size[0] / 2
@@ -46,7 +68,6 @@ def draw_squares(screen, wxr_range, max_range, window_size, display_angle):
         y_pos = base_y_pos - proportion * window_size[1] * math.cos(radians_angle) - dynamic_side_length
 
         pygame.draw.rect(screen, color, (int(x_pos), int(y_pos), int(dynamic_side_length), int(dynamic_side_length)))
-
 
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371 * 0.539957
@@ -62,7 +83,7 @@ def haversine(lat1, lon1, lat2, lon2):
     
     return distance
 
-def wxr_ahead(wxr, lat, lon, heading, rng, error):
+def wxr_data(wxr, lat, lon, rng):
     start_lat_rad = numpy.radians(lat)
     start_lon_rad = numpy.radians(lon)
 
@@ -76,38 +97,23 @@ def wxr_ahead(wxr, lat, lon, heading, rng, error):
     initial_bearing = numpy.arctan2(x, y)
     initial_bearing_deg = numpy.degrees(initial_bearing)
 
-    bearing = (initial_bearing_deg + 360) % 360
+    bearing = round_custom((initial_bearing_deg + 360) % 360)
+    if bearing == 360:
+        bearing = 0
 
-    '''
-    bearing_lower = (heading - error) % 360
-    bearing_upper = (heading + error) % 360
-
-    is_within_margin = False
-
-    if bearing_lower <= bearing_upper:
-        is_within_margin = bearing_lower <= bearing <= bearing_upper
-    else:
-        is_within_margin = bearing <= bearing_upper or bearing >= bearing_lower
-
-    if is_within_margin:
-    '''
-
-    distance = haversine(lat, lon, wxr['lat'], wxr['lon'])
+    distance = round_custom(haversine(lat, lon, wxr['lat'], wxr['lon']))
 
     if distance <= rng:
         return {
             'acf_lat': lat,
             'acf_lon': lon,
-            'heading': heading,
             'wxr_lat': wxr['lat'],
             'wxr_lon': wxr['lon'],
-            'bearing': round_custom(bearing),
+            'bearing': bearing,
             'lvl': wxr['storm_level'],
             'height': wxr['storm_height'],
-            'range': round(distance),
+            'range': distance,
         }
-
-    #return None
 
 if __name__ == '__main__':
 
@@ -121,7 +127,6 @@ if __name__ == '__main__':
 
   try:
     beacon = xp.FindIp()
-    print(beacon)
     
     xp.AddDataRef(longitude)
     xp.AddDataRef(latitude)
@@ -131,17 +136,11 @@ if __name__ == '__main__':
 
     xp.StartRadar(2000)
     max_range = 100
-    wxr_angle = 180
-    #wxr_angle = 50
-
-    #wxr_range = {angle: {} for angle in range(-wxr_angle, wxr_angle + 1)}
-    #wxr_range = {angle / 2: {} for angle in range(-2 * wxr_angle, 2 * wxr_angle + 1)}
-
-    wxr_range = {angle / 5: {} for angle in range(-5 * wxr_angle, 5 * wxr_angle + 1)}
-    #wxr_range = {angle / 5: {} for angle in range(0, int(359 * 5) + 1)}
+    wxr_range = {angle / 2: {} for angle in range(0, int(359 * 2) + 2)}
 
     sweep_angle = 50
     sweep_time = 10
+    gain = 0.9
 
     pygame.init()
     window_size = (1024, 768)
@@ -149,12 +148,14 @@ if __name__ == '__main__':
     screen = pygame.display.set_mode(window_size)
     pygame.display.set_caption("Radar")
 
-    while True:
+    run = True
+
+    while run:
       try:
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                running = False
+                run = False
 
         values = xp.GetValues()
 
@@ -165,29 +166,16 @@ if __name__ == '__main__':
         wxr_value = values['RADR']
         simtime_value = values[sim_time]
 
-        map_heading_value = round_custom(mag_track_value - mag_var_value)
+        mag_heading_value = round_custom(mag_track_value - mag_var_value)
 
         if wxr_value != []:
             for item in wxr_value:
-                ahead = wxr_ahead(item, latitude_value, longitude_value, map_heading_value, max_range, wxr_angle)
+                ahead = wxr_data(item, latitude_value, longitude_value, max_range)
                 if ahead is not None:
-                    #print('heading', map_heading_value, 'bearing', ahead['bearing'])
-                    #rel_angle = map_heading_value - ahead['bearing']
-                    #rel_angle = (raw_diff + 180) % 360 - 180
+                    wxr_range[ahead['bearing']][ahead['range']] = ahead['lvl']
 
-                    raw_diff = ahead['bearing'] - map_heading_value
-                    rel_angle = round((raw_diff + 180) % 360 - 180, 1)
-
-                    wxr_range[rel_angle][ahead['range']] = ahead['lvl']
-
-        #display_angle = sweep_motion(simtime_value, sweep_time, wxr_angle)
         display_angle = sweep_motion(simtime_value, sweep_time, sweep_angle)
-
-        #if display_angle == wxr_angle:
-        #  screen.fill((0, 0, 0))  # Clear the screen with black
-        
-        draw_squares(screen, wxr_range, max_range, window_size, display_angle)
-        
+        draw_squares(screen, wxr_range, max_range, window_size, display_angle, mag_heading_value, gain)
         pygame.display.flip()  
 
       except XPlaneTimeout:
@@ -204,4 +192,3 @@ if __name__ == '__main__':
   except XPlaneIpNotFound:
     print("XPlane IP not found. Probably there is no XPlane running in your local network.")
     exit(0)
-
